@@ -178,14 +178,17 @@ class LogStash::Inputs::CloudWatch_Logs < LogStash::Inputs::Base
 
   private
   def process_group(group)
+    if !@sincedb.member?(group)
+      @sincedb[group] = 0
+    end
+
+    start_time = @sincedb[group]; #Use initial start time for every request
     next_token = nil
+
     loop do
-      if !@sincedb.member?(group)
-        @sincedb[group] = 0
-      end
       params = {
           :log_group_name => group,
-          :start_time => @sincedb[group],
+          :start_time => start_time,
           :interleaved => true,
           :next_token => next_token
       }
@@ -199,7 +202,8 @@ class LogStash::Inputs::CloudWatch_Logs < LogStash::Inputs::Base
 
       next_token = resp.next_token
       break if next_token.nil?
-    end
+    end   
+
     @priority.delete(group)
     @priority << group
   end #def process_group
@@ -217,7 +221,10 @@ class LogStash::Inputs::CloudWatch_Logs < LogStash::Inputs::Base
       decorate(event)
 
       @queue << event
-      @sincedb[group] = log.timestamp + 1
+
+      # CESIUM: This will cause a ms overlap, but since we update
+      #  existing records it won't cause any duplicate data.
+      @sincedb[group] = log.timestamp
     end
   end # def process_log
 
