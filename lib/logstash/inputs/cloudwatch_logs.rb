@@ -55,7 +55,7 @@ class LogStash::Inputs::CloudWatch_Logs < LogStash::Inputs::Base
   public
   def register
     require "digest/md5"
-    @logger.debug("Registering cloudwatch_logs input", :log_group => @log_group)
+    @logger.info("Registering cloudwatch_logs input", :log_group => @log_group)
     settings = defined?(LogStash::SETTINGS) ? LogStash::SETTINGS : nil
     @sincedb = {}
 
@@ -167,7 +167,7 @@ class LogStash::Inputs::CloudWatch_Logs < LogStash::Inputs::Base
             sincedb[group] = 0
 
           when 'end'
-            sincedb[group] = DateTime.now.strftime('%Q')
+            sincedb[group] = DateTime.now.strftime('%Q').to_i
 
           else
             sincedb[group] = DateTime.now.strftime('%Q').to_i - (@start_position * 1000)
@@ -182,7 +182,15 @@ class LogStash::Inputs::CloudWatch_Logs < LogStash::Inputs::Base
       @sincedb[group] = 0
     end
 
-    start_time = @sincedb[group]; #Use initial start time for every request
+    # Use the last timestamp plus a 5 minute buffer for every request
+    start_time = @sincedb[group] - 300000
+    if start_time < 0
+      start_time = 0
+    end
+
+    # Time that we'll use to filter on the next run
+    ingestion_time = DateTime.now.strftime('%Q').to_i - 1000
+    
     next_token = nil
 
     loop do
@@ -198,11 +206,13 @@ class LogStash::Inputs::CloudWatch_Logs < LogStash::Inputs::Base
         process_log(event, group)
       end
 
-      _sincedb_write
-
       next_token = resp.next_token
       break if next_token.nil?
-    end   
+    end
+
+    # Set next ingestion time to before the filter was ran
+    @sincedb[group] = ingestion_time
+    _sincedb_write
 
     @priority.delete(group)
     @priority << group
@@ -211,6 +221,7 @@ class LogStash::Inputs::CloudWatch_Logs < LogStash::Inputs::Base
   # def process_log
   private
   def process_log(log, group)
+    return if log.ingestion_time < @sincedb[group]
 
     @codec.decode(log.message.to_str) do |event|
       event.set("@timestamp", parse_time(log.timestamp))
@@ -221,10 +232,6 @@ class LogStash::Inputs::CloudWatch_Logs < LogStash::Inputs::Base
       decorate(event)
 
       @queue << event
-
-      # CESIUM: This will cause a ms overlap, but since we update
-      #  existing records it won't cause any duplicate data.
-      @sincedb[group] = log.timestamp
     end
   end # def process_log
 
